@@ -8,7 +8,7 @@ variable "domain_name" {}
 // AWS S3 Website
 // Optional TLS with CloudFront Distribution
 module "test_website" {
-  source      = "./aws/website"
+  source      = "git::github.com/dean-martin/terraform//aws/website"
   domain_name = var.domain_name
   bucket_name = "${var.domain_name}mywebsite-zzzzz"
 
@@ -20,7 +20,7 @@ module "test_website" {
 // Verify via DNS in Terraform or manually in your registrar.
 // Verification can take up to an hour, it's usually much faster.
 module "acm_cert" {
-  source      = "./aws/acm-certificate"
+  source      = "git::github.com/dean-martin/terraform//aws/acm-certificate"
   domain_name = var.domain_name
 }
 
