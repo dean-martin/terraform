@@ -57,8 +57,9 @@ resource "aws_s3_bucket_policy" "s3_website" {
 
 /*
 # Disabled since we're going to use access S3 from CloudFront via S3 Website.
-See stackoverflow links above for why.
+See stackoverflow links at the top for why.
 # @see: https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/private-content-restricting-access-to-s3.html
+
 resource "aws_s3_bucket_policy" "allow_cloudfront" {
   count  = var.certificate_arn != null ? 1 : 0
   bucket = aws_s3_bucket._.id
@@ -82,26 +83,31 @@ resource "aws_s3_bucket_policy" "allow_cloudfront" {
     ]
   })
 }
+
+resource "aws_cloudfront_origin_access_control" "_" {
+  count = var.certificate_arn != null ? 1 : 0
+  name = "s3_website_${var.domain_name}"
+  origin_access_control_origin_type = "s3"
+  signing_behavior = "always"
+  signing_protocol = "sigv4"
+}
 */
 
 locals {
   s3_origin_id = "s3_website_${var.domain_name}"
 }
 
-resource "aws_cloudfront_origin_access_control" "_" {
-  count                             = var.certificate_arn != null ? 1 : 0
-  name                              = "s3_website_${var.domain_name}"
-  origin_access_control_origin_type = "s3"
-  signing_behavior                  = "always"
-  signing_protocol                  = "sigv4"
-}
-
 resource "aws_cloudfront_distribution" "_" {
   count = var.certificate_arn != null ? 1 : 0
   origin {
-    domain_name              = aws_s3_bucket._.bucket_regional_domain_name
-    origin_access_control_id = aws_cloudfront_origin_access_control._[0].id
-    origin_id                = local.s3_origin_id
+    origin_id = local.s3_origin_id
+    domain_name = aws_s3_bucket_website_configuration._.website_endpoint
+    custom_origin_config {
+      http_port = "80"
+      https_port = "443"
+      origin_protocol_policy = "http-only"
+      origin_ssl_protocols = ["TLSv1.2"]
+    }
   }
 
   enabled             = true
@@ -109,8 +115,9 @@ resource "aws_cloudfront_distribution" "_" {
   comment             = "AWS S3 + CloudFront Website -- Managed by Terraform"
   default_root_object = "index.html"
 
-  aliases = [var.domain_name, "www.${var.domain_name}"]
+  aliases = [var.domain_name]
 
+  # TODO: consider other ordered_cache_behavior defaults.
   default_cache_behavior {
     allowed_methods  = ["GET", "HEAD", "OPTIONS"] # Allow common read-only methods
     cached_methods   = ["GET", "HEAD"]            # Cache responses for GET and HEAD
@@ -130,8 +137,6 @@ resource "aws_cloudfront_distribution" "_" {
     max_ttl                = 86400
     compress               = true
   }
-
-  # TODO: consider other ordered_cache_behavior, might be useful for serving resume.PDF
 
   price_class = "PriceClass_200"
 
