@@ -25,3 +25,8 @@ variable "create_bucket" {
   default     = true
 }
 
+variable "error_document" {
+  description = "S3 website error document"
+  type = string
+  default = "error.html"
+}

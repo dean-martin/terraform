@@ -31,7 +31,7 @@ resource "aws_s3_bucket_website_configuration" "_" {
     suffix = "index.html"
   }
   error_document {
-    key = "error.html"
+    key = var.error_document
   }
 }
 
