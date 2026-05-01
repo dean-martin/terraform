@@ -8,25 +8,17 @@ variable "tags" {
 }
 
 variable "domain_name" {
-  description = "Set "
+  description = "Custom domain name for the CloudFront distribution (e.g. example.com)"
   type        = string
-  default     = null
 }
 
 variable "certificate_arn" {
-  description = "AWS ACM Certification ARN, passing this creates a CloudFront distribution. Default null."
+  description = "AWS ACM certificate ARN for the custom domain. Must be in us-east-1."
   type        = string
-  default     = null
-}
-
-variable "create_bucket" {
-  description = "Create the S3 bucket and website configuration. Default true."
-  type        = bool
-  default     = true
 }
 
 variable "error_document" {
-  description = "S3 website error document"
-  type = string
-  default = "error.html"
+  description = "Path to the error page object in S3, served via CloudFront custom error response"
+  type        = string
+  default     = "error.html"
 }

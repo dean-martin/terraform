@@ -1,68 +1,55 @@
-# see: https://repost.aws/knowledge-center/cloudfront-serve-static-website
-# see: https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/CNAMEs.html#alternate-domain-names-requirements
-/*
- lol, this is amazing:
- - https://stackoverflow.com/questions/49082709/redirect-to-index-html-for-s3-subfolder
- - https://gist.github.com/zulhfreelancer/24f73015c5437281f3b98c3cb34ea225
- - https://stackoverflow.com/questions/31017105/how-do-you-set-a-default-root-object-for-subdirectories-for-a-statically-hosted
-
- "Official Answer" is to use a Lamba? For static hosting? no way
- asinine
- */
 resource "aws_s3_bucket" "_" {
   bucket = var.bucket_name
 
   tags = var.tags
 }
 
-resource "aws_s3_bucket_public_access_block" "allow_public_acls" {
+resource "aws_s3_bucket_public_access_block" "_" {
   bucket = aws_s3_bucket._.id
 
-  block_public_acls       = false
-  block_public_policy     = false
-  ignore_public_acls      = false
-  restrict_public_buckets = false
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
 }
 
-resource "aws_s3_bucket_website_configuration" "_" {
-  bucket = aws_s3_bucket._.id
-
-  index_document {
-    suffix = "index.html"
-  }
-  error_document {
-    key = var.error_document
-  }
+resource "aws_cloudfront_origin_access_control" "_" {
+  name                              = "s3_website_${var.domain_name}"
+  description                       = "OAC for ${var.domain_name}"
+  origin_access_control_origin_type = "s3"
+  signing_behavior                  = "always"
+  signing_protocol                  = "sigv4"
 }
 
-resource "aws_s3_bucket_policy" "s3_website" {
-  bucket = aws_s3_bucket._.id
+resource "aws_cloudfront_function" "_" {
+  name    = "subdirectory_index_${replace(var.domain_name, ".", "_")}"
+  runtime = "cloudfront-js-2.0"
+  comment = "Rewrite bare directory URIs to index.html for ${var.domain_name}"
+  publish = true
 
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Sid       = "PublicReadGetObject"
-        Effect    = "Allow"
-        Principal = "*"
-        Action    = "s3:GetObject"
-        Resource = [
-          aws_s3_bucket._.arn,
-          "${aws_s3_bucket._.arn}/*",
-        ]
-      },
-    ]
-  })
+  code = <<-EOF
+    function handler(event) {
+      var request = event.request;
+      var uri = request.uri;
+
+      if (uri.endsWith('/')) {
+        request.uri = uri + 'index.html';
+        return request;
+      }
+
+      var lastSegment = uri.split('/').pop();
+      if (lastSegment.indexOf('.') === -1) {
+        request.uri = uri + '/index.html';
+      }
+
+      return request;
+    }
+  EOF
 }
 
-/*
-# Disabled since we're going to use access S3 from CloudFront via S3 Website.
-See stackoverflow links at the top for why.
-# @see: https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/private-content-restricting-access-to-s3.html
-
-resource "aws_s3_bucket_policy" "allow_cloudfront" {
-  count  = var.certificate_arn != null ? 1 : 0
+resource "aws_s3_bucket_policy" "_" {
   bucket = aws_s3_bucket._.id
+
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
@@ -76,38 +63,25 @@ resource "aws_s3_bucket_policy" "allow_cloudfront" {
         Resource = "${aws_s3_bucket._.arn}/*"
         Condition = {
           StringEquals = {
-            "AWS:SourceArn" = aws_cloudfront_distribution._[0].arn
+            "AWS:SourceArn" = aws_cloudfront_distribution._.arn
           }
         }
       },
     ]
   })
-}
 
-resource "aws_cloudfront_origin_access_control" "_" {
-  count = var.certificate_arn != null ? 1 : 0
-  name = "s3_website_${var.domain_name}"
-  origin_access_control_origin_type = "s3"
-  signing_behavior = "always"
-  signing_protocol = "sigv4"
+  depends_on = [aws_s3_bucket_public_access_block._]
 }
-*/
 
 locals {
   s3_origin_id = "s3_website_${var.domain_name}"
 }
 
 resource "aws_cloudfront_distribution" "_" {
-  count = var.certificate_arn != null ? 1 : 0
   origin {
-    origin_id = local.s3_origin_id
-    domain_name = aws_s3_bucket_website_configuration._.website_endpoint
-    custom_origin_config {
-      http_port = "80"
-      https_port = "443"
-      origin_protocol_policy = "http-only"
-      origin_ssl_protocols = ["TLSv1.2"]
-    }
+    origin_id                = local.s3_origin_id
+    domain_name              = aws_s3_bucket._.bucket_regional_domain_name
+    origin_access_control_id = aws_cloudfront_origin_access_control._.id
   }
 
   enabled             = true
@@ -117,10 +91,9 @@ resource "aws_cloudfront_distribution" "_" {
 
   aliases = [var.domain_name]
 
-  # TODO: consider other ordered_cache_behavior defaults.
   default_cache_behavior {
-    allowed_methods  = ["GET", "HEAD", "OPTIONS"] # Allow common read-only methods
-    cached_methods   = ["GET", "HEAD"]            # Cache responses for GET and HEAD
+    allowed_methods  = ["GET", "HEAD", "OPTIONS"]
+    cached_methods   = ["GET", "HEAD"]
     target_origin_id = local.s3_origin_id
 
     forwarded_values {
@@ -131,6 +104,11 @@ resource "aws_cloudfront_distribution" "_" {
       }
     }
 
+    function_association {
+      event_type   = "viewer-request"
+      function_arn = aws_cloudfront_function._.arn
+    }
+
     viewer_protocol_policy = "redirect-to-https"
     min_ttl                = 0
     default_ttl            = 3600
@@ -138,20 +116,33 @@ resource "aws_cloudfront_distribution" "_" {
     compress               = true
   }
 
+  # S3 returns 403 (not 404) for missing objects when the bucket is private
+  custom_error_response {
+    error_code            = 403
+    response_code         = 404
+    response_page_path    = "/${var.error_document}"
+    error_caching_min_ttl = 10
+  }
+
+  custom_error_response {
+    error_code            = 404
+    response_code         = 404
+    response_page_path    = "/${var.error_document}"
+    error_caching_min_ttl = 10
+  }
+
   price_class = "PriceClass_200"
 
   restrictions {
     geo_restriction {
       restriction_type = "whitelist"
-      # i guess this will prevent bots incurring extra cost
-      locations = ["US", "CA", "GB", "DE", "JP"]
+      locations        = ["US", "CA", "GB", "DE", "JP"]
     }
   }
 
-  # Attach the ACM certificate to the CloudFront distribution
   viewer_certificate {
-    acm_certificate_arn      = var.certificate_arn # Reference the ACM certificate ARN
-    ssl_support_method       = "sni-only"          # Use SNI for cost efficiency
-    minimum_protocol_version = "TLSv1.2_2021"      # Set a secure minimum protocol version
+    acm_certificate_arn      = var.certificate_arn
+    ssl_support_method       = "sni-only"
+    minimum_protocol_version = "TLSv1.2_2021"
   }
 }
